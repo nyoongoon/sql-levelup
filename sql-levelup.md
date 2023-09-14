@@ -523,7 +523,7 @@ FROM (SELECT address AS v_address, COUNT(*) AS cnt
 
 #### 서브쿼리를 사용한 편리한 조건 지정 (매칭 사용)
 - 서브쿼리를 사용할 때 중요한 것 
-- -> WHERE구의 조건에 서브쿼리를 사용하는 방법. --> **매칭**
+- -> **WHERE구의 조건에 서브쿼리를 사용**하는 방법. --> **매칭**
 - 서로다른 테이블에 있는 공통된 데이터를 선택
 - -> Address 테이블에서 Address2 테이블에 있는 사람을선택 -> 매칭
 - -> 이런경우 IN 조건을 활용가능 -> **IN은 서브쿼리를 매개변수로 받을 수도 있음!**
@@ -534,7 +534,7 @@ SELECT name
 WHERE name IN (SELECT name FROM Address2);
 ```
 - -> SQL은 서브쿼리부터 순서대로 실행 
-- -> 앞의 SELECT 구문은 서브쿼리를 상수로 전개해서 먼저 진행
+- -> 앞의 SELECT 구문은 서브쿼리를 상수로 전개구문이 바뀌는 것
 ```sql
 SELECT name 
     FROM Address
@@ -544,11 +544,108 @@ SELECT name
 
 ## 7강 조건 분기, 집합 연산, 윈도우 함수, 갱신
 
-### 1. SQL과 조건 분기
+### 1. SQL과 조건 분기 - CASE식
+- SQL에도 조건 분기를 하는 방법이 있지만 사용방법이 다름
+- SQL은 코드를 절차적으로 기술하는것이 아니므로 조건 분기를 '문장'단위로 하지 않기 떄문
+- -> SQL의 조건 분기는 "식"으로 분기를 함. -> **CASE 식**
+- CASE식은 단순 CASE식과 **검색 CASE식** 두 종류가 있음.
+- -> 검색 CASE식은 단순 CASE식의 기능을 모두 포함하므로 검색 CASE만 기억해도 충분
+```sql
+CASE WHEN [평가식] THEN [식]
+    WHEN [평가식] THEN [식]
+    WHEN [평가식] THEN [식]
+    생략
+    ELSE [식]
+END
+``` 
+####  CASE식의 작동
+- switch 조건문과 거의 비슷
+- **CASE문은 특정한 값(상수)를 리턴**하는 것이 차이점
+- CASE식의 강력한 점은 **식**이라는 것
+- -> 식을 적을 수 있는 곳이라면 어디든 적을 수 있음
+- SELECT, WHERE, GROUP BY, HAVING, ORDER BY 구와 같은 곳 어디에나 적을 수 있음.
 
-### 2. SQL의 집합 연산
+### 2. SQL의 집합 연산 - UNION & INTERSECT & EXCEPT
+- WHERE 구를 설명할 때 벤다이어그램을 사용한 집한 연산으로 예를 들었지만
+- -> 테이블을 사용해 **집합 연산**을 하는 기능 -> **UNION**
+
+#### UNION으로 합집합 구하기
+- 중복된 레코드는 제거됨!
+- -> 중복 제외하고 싶지 않으면 'UNION ALL'
+```sql
+SELECT * 
+    FROM Address
+UNION
+SELECT *
+    FROM Address2;
+```
+
+#### INTERSECT로 교집합 구하기
+```sql
+SELECT * 
+    FROM Address
+INTERSECT 
+SELECT *
+    FROM Address2;
+```
+- -> 양쪽에 공통으로 존재하는 레코드(로우)출력
+- -> 마찬가지로 중복은 제거된 것임.
+
+#### EXCEPT로 차집합 구하기 (오라클은 MINUS)
+```sql
+SELECT * 
+    FROM Address
+EXCEPT 
+SELECT *
+    FROM Address2;
+```
+- EXCEPT는 UNION과 INTERSECT와는 다르게, 
+- -> 작성할 때 테이블 순서에 따라 결과가 다름
+- 1-5 와 5-1이 다른 것과 같은 이치. (교환법칙 성립하지 않음)
 
 ### 3. 윈도우 함수
+- 윈도우 함수는 데이터를 가공하게 해준다는점에서도 중요하지만 성능과도 큰 관계가 있음
+- **윈도우 함수의 특징**은 한마디로 **집약 기능이 없는 GROUP BY 구**
+- -> **GROUP BY구는 자르기와 집약**이라는 두 개의 기능으로 구분됨
+- -> **윈도우 함수는 자르기 기능만** 있는 것.
+```sql
+SELECT address, COUNT(*)
+    FROM Address
+    GROUP BY address;
+
+-- 결과
+address  | count 
+----------------
+서울시     | 3
+인천시     | 2
+부산시     | 1
+```
+- 위 GROUP BY는 필드로 테이블을 자르고, 잘라진 조각 개수만큼 레코드수를 더해 결과를 출력
+- 윈도우 함수도 테이블을 자르는 것은 GROUP BY와 같음
+- 윈도우 함수는 이를 **PARTITION BY** 라는 구로 수행함.
+- -> **차이점은 자른 후에 집약하지 않으므로** 출력 결과의 레코드수가 입력되는 테이블의 레코드수와 같다는 것.
+- 윈도우 함수의 기본적인 구문은 **집약 함수 뒤에 OVER구를 작성**하고
+- -> **내부에 자를 키를 지정하는 PARTITION BY 또는 ORDER BY를 입력**하는 것.
+- -> 작성하는 장소는 SELECT구라고만 생각해도 문제없음.
+```sql
+SELECT address,
+       COUNT(*) OVER(PARTITION BY address)
+    FROM Address;
+
+-- 결과
+-- 결과
+address  | count 
+----------------
+서울시     | 3
+서울시     | 3
+서울시     | 3
+----------------
+인천시     | 2
+인천시     | 2 
+----------------
+부산시     | 1
+```
+- 윈도우 함수로 사용할 수 있믐 함수
 
 ### 4. 트랜잭션과 갱신
 
