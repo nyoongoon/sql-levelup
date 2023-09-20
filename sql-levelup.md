@@ -454,7 +454,7 @@ WHERE phone_nbr IS NULL;
 - -> 합계 또는 평균등의 **집계 연산**을 SQL 구문으로 할 수 있음
 - -> GROUP BY 구는 테이블을 홀케이크처럼 다룬다 개념
 - -> 케이크를 자를 때의 **기준은 필드**
-- -> 잘라진 조각은 그룹이라고 부름. 그룹은 집계함수 사용이 가능.
+- -> **잘라진 조각은 그룹**이라고 부름. **그룹은 집계함수 사용**이 가능.
 - COUNT, SUM, AVG, MAX, MIN
 - 조각으로 자르고 싶지 않다면
 - -> GROUP BY 구문에 키를 지정X
@@ -645,25 +645,170 @@ address  | count
 ----------------
 부산시     | 1
 ```
-- 윈도우 함수로 사용할 수 있믐 함수
+#### 윈도우 함수로 사용할 수 있는 함수
+- COUNT, SUM 같은 일반 함수
+- RANK, ROW_NUMBER 같은 윈도우 전용함수 (순서함수)
 
 ### 4. 트랜잭션과 갱신
+- 갱신 작업은 삽입, 제거, 갱신의 세종류로 분류
+- 의외에도 삽입과 갱신을 합친 머지(MERGE)가 있음
+#### INSERT로 데이터 삽입
+- RDB에서 데이터를 등록하는 단위는 **레코드(행)**
+- 기본적인 등록단위는 하나의 레코드 씩(여러개의 레코드를 한개의 insert구문에 삽입하는 DBMS도 있음)
+- -> 이때 사용하는것이 INSERT구문
+- -> 문자 그대로 레코드를 삽입.
+#### DELETE로 데이터 제거
+- 데이터를 삭제할 때는 하나의 레코드 단위가 아니라, 한 번에 여러개의 레코드 단위로 처리
+#### UPDATE로 데이터 갱신
+```sql
+-- UPDATE구문을 한 번 사용해서 갱신
+UPDATE Address
+    SET phone_nbr = '080-5848-XXXX',
+        age = 20
+    WHERE name = '빛나래';
+```
+#### 예제
+- Address테이블에서 성별 별로 나이 순위(건너뛰기 있게) 매기는 SELECT구문을 생각
+```sql
+SELECT name, RANK() OVER (PARTITION BY sex ORDER BY age DESC) rnk_desc 
+    FROEM Address;
+```
 
 # 3장 SQL의 조건 분기
+- CASE식 의외에도 조건 분기에 사용할 수 있는 구문 -> UNION
+- 하지만 굉장히 좋지 않은 SQL 구문..
+- -> UNION은 조건 분기를 위해 만들어진 것이 아님!
+- 많은 사람들이 어떻게 작동할지 쉽게 예측할 수 있다는 이유에서 UNION을 많이 사용함
 
 ## 8강 UNION을 사용한 쓸데없이 긴 표현
+- UNION을 사용한 조건 분기는 좋지 않음
+- WHERE구만 조금씩 다른 여러개의 SELECT구문을 합쳐, 복수의 조건이 일치하는 하나의 결과 집합을 얻고 싶을 때 사용
+- -> 성능에서 굉장히 큰 단점 -> 내부적으로 여러개의 SELECT 구문을 실행하는 실행계획으로 해석됨
+- -> 테이블 접근 횟수가 많아져서 I/O비용이 크게 늘어남.
 
 ### 1. UNION을 사용한 조건 분기와 관련된 간단한 예제
+- ex) 2001년까지는 세금이 포함되지 않은 가격을, 2002년부터느 세금 포함 가격을 필드로 표시
+```sql
+-- UNION을 사용한 안좋은 예시
+SELECT item_name, year, price_tax_ex AS price
+    FROM Items
+    WHERE year <= 2001
+UNION ALL 
+SELECT item_name, year, price_tax_in AS price
+    FROM Items
+    WHERE year >= 2002;
+```
+- 위의 예시는 조건이 배타적이므로 중복된 레코드가 발생되진 않음
+- 정렬들의 처리를 하지 않아도 되므로 UNION ALL을 사용
+- 쓸데없이 길다는 것이 첫 번째 문제 -> 거의 같은 쿼리 두번 실행.
+- 두번째 문제는 성능
+
+#### UNION을 사용했을 떄의 실행 계획 문제
+- -> 실행계획을 살펴보면 위의 UNION쿼리는 Items 테이블에 2회 접근하고 있음
+- -> 그때마다 TABLE ACCESS FULL이 발생하므로 읽는 비용도 테이블 크기에 따라 선형적으로 증가
+- -> 데이터 캐시에 테이블의 데이터가 있으면 완화되겠지만, 테이블이 커지면 캐시 히트율도 낮아짐.
 
 ### 2. WHERE 구에서 조건 분기를 하는 사람은 초보자
+- 조건분기를 WHERE로 하지말고 **SELECT구만으로 조건 분기**하기
+```sql
+SELECT item_name, year,
+    CASE WHEN year <= 2001 THEN price_tax_ex
+        WHEN year >= 2002 THEN price_tax_in END AS price
+    FROM Items;
+```
+- 이 쿼리도 위의 UNION쿼리와 같은 결과를 출력함
+- 하지만 성능적으로 이 쿼리가 훨씬 좋음. 
 
 ### 3. SELECT 구를 사용한 조건 분기의 실행 계획
+- Items 테이블에 대한 접근이 1회로 줄어들어 성능이 2배 좋아진 것임
+- 가독성 또한 좋아짐. 
+- -> UNION을 사용한 분기는 SELECT 구문을 기본단위로 분기하고 있음
+- -> **구문을 기본 단위로 사용하고 있다는 점에서 아직 절차 지향형의 발성을 못벗어남**
+- -> 반면, **CASE식을 사용한 분기는 문자 그대로 '식'을 바탕으로하는 사고**
 
 ## 9강 집계와 조건 분기
-
+- 집계를 수행하는 쿼리 작성 시 쓸데없이 길어지는 경우 많음
+- 지역별로 남녀 인구를 기록하는 Population 테이블
 ### 1. 집계 대상으로 조건 분기
+- 절차지향적 사고방식으로는 남성의 인구를 지역별로 구하고, 여성의 인구를 지역별로 구한 뒤
+- 머지하는 방법을 생각할 것임.. (안좋은예)
+```sql
+-- UNION 
+SELECT prefecture, SUM(pop_mem) AS pop_mem, SUM(pop_wom) AS pop_wom
+    FROM( SELECT prefecture, pop AS pop_mem, null AS pop_wom
+            FROM Population
+          WHERE sex = '1'
+          UNION
+          SELECT prefecture, NULL AS pop_men, pop AS pop_wom
+          FROM Population
+          WHERE sex = '2') TMP
+    GROUP BY prefecture;
+```
+- -> WHERE 구에서 sex 필드로 분기하고 결과를 UNION으로 머지한다는 절자지향적인 구성이 문제
+- -> 테이블 풀스캔 2번 일어남. 
+
+#### 집계의 조건 분기도 CASE식을 사용
+- CASE식을 집약함수 내부에 포함시켜서 남성인구와 여성인구 필터를 만들기
+```sql
+SELECT prefecture,
+       SUM(CASE WHEN sex = '1' THEN pop ELSE 0 END) AS pop_men,
+       SUM(CASE WHEN sex = '2' THEN pop ELSE 0 END) AS pop_wom
+   FROM Population
+   GROUP BY prefecture;
+```
+#### CASE 식의 실행 계획
+- 풀스캔 1번으로 줄음
+
 
 ### 2. 집약 결과로 조건 분기
+- 집약에 조건 분기를 적용하는 또 하나의 패턴으로, 집약 결과에 조건 분기를 수행
+- ex) 조건
+- -> 소속된 팀이 1개라면 해당 직원은 팀의 이름을 그대로 출력
+- -> 소속된 팀이 2개라면 해당 직원은 '2개를 겸무' 라는 문자열을 출력
+- -> 소속된 팀이 3개 이상이라면 해당 직원은 '3개 이상을 겸무' 문자열 출력
+#### UNION을 사용한 잘못된 조건 분기
+- 조건분기가 레코드 값이 아닌, 집합의 레코드수에 적용됨
+- -> 따라서 조건 분기가 WHERE(레코드의 조건) 구가 아니라 HAVING(집합의 조건) 구에 지정
+- -> 하지만 UNION으로 머지하고 있는 이상, 구문레벨의 분기일 뿐 WHERE구 사용과 크게 다르지 않음.
+```sql
+SELECT emp_name,
+       MAX(team) AS team
+    FROM Employees
+    GROUP BY emp_name
+    HAVING COUNT(*) = 1
+UNION 
+SELECT emp_name,
+       '2개를 겸무' AS team
+    FROM Employees
+    GROUP BY emp_name
+    HAVING COUNT(*) = 2
+UNION
+SELECT emp_name
+        '3개 이상을 겸무' AS team
+    FROM Employees
+    GROUP BY emp_name
+    HAVING COUNT(*) >= 3;
+```
+#### UNION의 실행계획
+- 테이블 풀스캔 3번
+
+#### CASE 식을 사용한 조건 분기
+```sql
+SELECT emp_name,
+       CASE WHEN COUNT(*) = 1 THEN MAX(team)
+            WHEN COUNT(*) = 2 THEN '2개를 겸무'
+            WHEN COUNT(*) >= 3 THEN '3개 이상을 겸무'
+          END AS team
+    FROM Employees
+    GROUP BY emp_name;
+```
+#### CASE식을 사용한 조건 분기의 실행계힉
+- -> 테이블 풀스캔 1번 
+- -> GROUP BY 해시 연산도 3회에서 1회로 줄어드
+- -> 집약결과(COUNT 함수의 리턴값)를 CASE 식의 입력으로 사용했기 때문
+- -> **COUNT 또는 SUM과 같은 집약함수의 결과는 1개의 레코드로 압축됨**
+- -> 다르게 말하면 **집약함수의 결과는 스칼라 값**(더이상 분할 불가능 값)이 되는 것
+- -> 따라서 CASE식의 매개변수에 집약함수를 넣을수 있는 것임. 
 
 ## 10강 그래도 UNION이 필요한 경우
 
