@@ -813,22 +813,161 @@ SELECT emp_name,
 ## 10강 그래도 UNION이 필요한 경우
 
 ### 1. UNION을 사용할 수밖에 없는 경우
+- 머지 대상이 되는 SELECT 구문들에서 사용되는 테이블이 다른 경우
+- == 여러개의 테이블에서 검색한 결과를 머지하는 경우
+```sql
+SELECT col_1
+    FROM Table_A
+    WHERE col_2='A'
+UNION ALL 
+SELECT col_3
+    FROM Table_B
+    WHERE col_4 = 'B';
+```
+- FROM구에 테이블을 결합하면 CASE식을 사용해 원하는 결과를 구할수도 있음
+- 하지만 이 상황에선 그렇게하면 필요없는 결합이 발생해서 악영향 발생
 
 ### 2. UNION을 사용하는 것이 성능적으로 더 좋은 경우
+- UNION이외의 다른 방법으로도 풀 수 있지만, UNION을 사용하는 편이 더 성능이 좋은 경우
+- -> **인덱스와 관련된 경우**
+- -> UNOIN을 사용했을 때 좋은 인덱스(압축을 잘 하는 인덱스)를 사용하지만,
+- -> 이외의 경우에는 테이블 풀스캔이 발생한다면 UNION을 사용한 방법이 성능적으로 더 좋을 수도 있음
+- ex)
+![](/img/img_3.png)
+- 레코드는 (data_n, flas_n이라는 3개의 짝에서 하나의 짝에만 값이 있고, 다른짝은 모두 (null, null))
+- -> 테이블에서 date_1~data_3이 특정 날짜(2013-11-01)를 값으로 갖고 있고, 대칭되는 플래그 필드의 값이 'T'인 레코드를 선택할 때, ~~
+
+#### UNION을 사용한 방법
+- 위 문제를 UNION을 사용해 해결하면 굉장히 간단함
+- -> 3개의 SELECT 구문을 UNION으로 머지하면 됨
+```sql
+SELECT key, name
+    date_1, flg_1,
+    date_2, flg_2,
+    date_3, flg_3
+  FROM ThreeElements
+  WHERE date_1 = '2013-11-01'
+  AND flg_1 = 'T'
+UNION
+SELECT key, name
+  date_1, flg_1,
+  date_2, flg_2,
+  date_3, flg_3
+FROM ThreeElements
+WHERE date_2 = '2013-11-01'
+  AND flg_2 = 'T'
+UNION
+SELECT key, name
+  date_1, flg_1,
+  date_2, flg_2,
+  date_3, flg_3
+FROM ThreeElements
+WHERE date_3 = '2013-11-01'
+  AND flg_3 = 'T'
+```
+- -> 중요한 것이 성능과 실행계획
+- -> 이때 포인트가 인덱스 이 쿼리를 최적의 성능으로 수행하려면 다름과 같은 필드 조합에 인덱스가 필요
+```sql
+CREATE INDEX IDX_1 ON ThreeElements (date_1, flg_1);
+CREATE INDEX IDX_2 ON ThreeElements (date_2, flg_2);
+CREATE INDEX IDX_3 ON ThreeElements (date_3, flg_3);
+```
+- -> WHERE 구에서 (date_n, flg_n)라는 필드 조합을 사용할 때 빠르게 만들어줌
+#### UNION의 실행결과 
+- 테이블의 레코드 수가 적은경우 테이블 풀스캔이 발생할 수도 있음
+- 테이블 크기가 작을 경우 풀스캔과 인덱스스캔이 비슷
+- -> 위의 예시의 경우 3개의 select구문 모두 인덱스가 사용되고 있음
+
+#### OR를 사용한 방법
+- UNION을 사용하지 않고 푼다면 어떻게? 
+- OR조건 사용 예시
+```sql
+SELECT key, name 
+    date_1, flg_1,
+    date_2, flg_2,
+    date_3, flg_3
+  FROM ThreeElements
+  WHERE (date_1 = '2013-11-01' AND flg_1 = 'T')
+  OR (date_2 = '2013-11-01' AND flg_2 = 'T')
+  OR (date_3 = '2013-11-01' AND flg_3 = 'T')
+```
+#### OR조건 실행계획
+- SELECT구문이 하나도 줄어들었기 때문에 테이블에 대한 접근이 1회로 줄어듬
+- -> 하지만 테이블 풀스캔으로 수행 
+- -> 3회의 인덱스 스캔 VS 1회의 테이블 풀스캔의 문제가 됨
+- -> 테이블 크기와 검색조건에 따른 선택비율(레코드 히트율)에 따라 답이 달라짐
+- -> 테이블이 크고, WHERE 조건으로 선택되는 레코드 수가 작다면 UNION이 더 빠름
+
+#### IN을 사용한 방법
+- OR쿼리를 IN쿼리로 변환
+```sql
+SELECT key, name,
+    date_1, flg_1,
+    date_2, flg_2,
+    date_3, flg_3
+  FROM ThreeElements
+  WHERE ('2013-11-01', 'T') //WHERE 대상에 값, IN에 칼럼이 들어갔네.. 
+    IN((date_1, flg_1),
+      (date_2, flg_2),
+      (date_3, flg_3));
+```
+- -> 위는 다중필드, 또는 행식이라는 기능을 사용한 방법임
+- -> IN의 매개변수로는 단순한 스칼라뿐만 아니라,
+-> 이렇게 (a, b, c)와 같은 값의 리스트를 입력할 수도 있음.
+- -> 하지만 실행계획은 OR와 같음
 
 ## 11강 절차 지향형과 선언형
+- 몇가지 상황을 제외하면 UNION을 사용하지 않는 것이 성능적으로도 좋고 가독성도 좋음
 
 ### 1. 구문 기반과 식 기반
+- sql초보자는 절차지향적인 구문 기본
+- sql중급자는 선언적인 식기반
 
 ### 2. 선언형의 세계로 도약
 
 # 4장 집약과 자르기
+- sql의 특징적인 사고방식 중에, 레코드 단위가 아닌,
+- 레코드의 '집합'단위로 처리를 기술하는 것이 있음 -> 이러한 사용방식을 집합 지향
+- 기본적인 데이터 사고방식 단위를 '레코드'에서 '레코드 집합'으로 변경하려면 어느정도 발상의 전환이 필요
+
 
 ## 12강 집약
+- SQL에는 5개의 집약함수 있음 -> 여러 레코드를 하나의 레코드로 집약
+- COUNT, SUM, AVG, MAX, MIN
 
 ### 1. 여러 개의 레코드를 한 개의 레코드로 직얍
+- 비집약 테이블처럼 한 사람과 관련된 정보가 여러 개의 레코드로 분산되어 있을 경우
+- -> 집약함수를 사용하여 한개의 레코드로 얻는것이 편하다
+#### CASE식과 GROUP BY 응용
+- 비집약 테이블에서 집약 테이블로 변환시키기
+##### GROUP BY구로 집약했을 떄 SELECT 구에 입력 가능한 세가지
+- 상수
+- GROUP BY 구에서 사용한 집약키
+- 집약 함수
+##### 예시
+```sql
+SELECT id, 
+       MAX(CASE WHEN data_type='A'THEN data_1 ELSE NULL END) AS data_1,
+       MAX(CASE WHEN data_type='A'THEN data_2 ELSE NULL END) AS data_2,
+       MAX(CASE WHEN data_type='B'THEN data_3 ELSE NULL END) AS data_3,
+       MAX(CASE WHEN data_type='B'THEN data_4 ELSE NULL END) AS data_4,
+       MAX(CASE WHEN data_type='B'THEN data_5 ELSE NULL END) AS data_5,
+       MAX(CASE WHEN data_type='C'THEN data_6 ELSE NULL END) AS data_6
+    FROM NonAggTbl
+    GROUP BY id;
+```
+
+#### 집약, 해시, 정렬
+- 이런 집약 쿼리의 실행 계획은 테이블 풀스캔하고, GROUP BY로 집약수행하는 간단한 실행계획
+- -> 주목해야할 부분은 **GROUP BY의 집약 조작에 해시 알고리즘을 사용**하고 있다는 것
+- 정렬(SORT)도 사용되고 해시도 사용됨(최근엔 해시 많이 사용)
+- -> **해시의 설징 상 GROUP BY의 유일성이 높으면 더 효율적으로 작동**
+##### GROUP BY(집약) 시 성능 주의점
+- 정렬과 해시 모두 메모리를 많이 사용하므로 충분한 워킹메모리 확보하지 않으면 스왑이 발생
 
 ### 2. 합쳐서 하나
+- 다시보기. 레코드 합칠떄 중간에 비어있는 부분도 이어져있다고 가정하여 합친다는 이슈인가..?
+
 
 ## 13강 자르기
 
