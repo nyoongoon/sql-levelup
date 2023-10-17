@@ -1053,26 +1053,213 @@ SELECT CASE WHEN age < 20 THEN '어린이'
 - -> 파스는 DB가 SQL을 받을 때마다 실행되므로 반복계에서 오버헤드 더 높아짐.
 
 #### 병렬 분산이 힘들다.
+- 반복계는 반복 1회마다의 처리를 굉장히 단순화함.
+- 리소스를 분산해서 병렬처리하는 최적화가 안됨
+- CPU의 멀티코어로 분산처리 할 수 없음, 저장소의 분산효율 낮음
+- DB저장소는 대부분 RAID디스크로 I/O부하 분산을 할수 있음
+- 반복계에서 실행하는 SQL 구문은 단순해서 1회의 sql 구문이 접근하는 데이터양이 적음
+- -> I/O를 병렬화하기 힘들다는 단점
+![](img/img_5.png)
+#### 데이터베이스의 진화로 인한 혜택을 받을 수 없음
+- 미들웨어 또는 미들웨어의 진화에 따른 혜택을 거의 받을 수 없음
+- -> 이러한 성능 효과가 있으려면 sql이 충분히 튜닝되어있다는 전제가 있어야함.
+- -> 반복계는 튜닝의 가능성도 거의 없음
 
 ### 2. 반복계를 빠르게 만드는 방법은 없을까?
+- 1. 반복계를 포장계로 다시 작성.
+- 2. 각각의 SQL을 빠르게 수정 -> 유니크 스캔 또는 인덱스 레인지 스캔 정도 뿐 튜닝의 효과를 보기 어려움
+- -> INSERT 구문은 SELECT보다 고속화가 더 어려움(실행계획이 단순하기 떄문)
+- 3. 다중화 처리
+- -> CPU 또는 디스크와 같은 리소스에 여유가 있고 처리를 나눌 수 있는 키가 명확히 정해져 있다면
+- -> 처리를 다중화해서 성능을 선형에 가깝게 스케일할 수 있음. 
 
 ### 3. 반복계의 장점
+- sql 구문이 단순해서 실행계획도 단순 
+#### 실행 계획의 안정성
+- 실행계획이 단순하다는 것은 해당 실행 계획에 변동 위험이 거의 없다는 것
+- 변동이 일어나봤자 옵티마이저에서 사용하는 인덱스를 바꾸는 정도
+- -> 특히 SQL 구문 내부에서 결합을 사용하지 않아도 된다는 것이 크게 작용
+- -> 실행 계획 변동에서 가장 골칫거리가 되는 것이 바로 결합 알고리즘의 변경
+#### 예상처리시간의 정밀도
+- 실행계획이 단순하고 성능이 안정적이라는 것은 추가적인 장점
+- -> 예상 처리 시간의 정밀도가 높다는 것. 
+- -> 반복계의 처리 시간은 다음과 같이 표현 가능
+```
+처리시간 = 한 번 실행 시간 x 실행 횟수
+```
+#### 트랜잭션 제어가 편리
+- 트랜잭션의 정밀도를 미세하게 제어 가능. 
+- -> 중간에 오류 발생했다고 해도, 커밋을 했다면 해당 지점에서 다시 처리 실행 가능
+
 
 ## 16강 SQL에서는 반복을 어떻게 표현할까?
-
+- 포장계로 처리 하는 방법 
 ### 1. 포인트는 CASE식과 윈도우 함수
+- -> **반복을 분기로 변경**
+- SQL에서 반복을 대신하는 수단은 바로 CASE식과 윈도우 함수
+- SIGN 함수 응용 -> 숫자 자료형을 매개변수로 받아 음수라면 -1, 양수라면1, 0이라면 0을 리턴
+```sql
+-- SIGN함수를 직전 연도와의 판매 변화를 알고자 사용
+INSERT INTO Sales2 
+SELECT company,
+       year,
+       sale,
+       CASE SIGN(sale - MAX(sale)
+                            OVER (PARTITION BY company
+                                  ORDER BY year
+                                  ROWS BETWEEN 1 PRECEDING
+                                           AND 1 PRECEDING))    
+       WHEN 0 THEN '='
+       WHEN 1 THEN '+'
+       WHEN -1 THEN '-'
+       ELSE NULL END AS var
+   FROM Sales;
+```
+- -> ROWS BETWEEN 옵션을 사용 -> 대상 범위의 레코드를 직전의 1개로 제한함
+- ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING 
+- -> 현재 레코드에서 1개 이전부터 1개 이전까지 레코드 범위 -> 직전의 1개로 레코드를 제한
+
+### cf) 상관 서브쿼리를 사용한 대상 레코드 제한
+- 상관 서브쿼리는 서브쿼리 내부에서 외부 쿼리와의 결합조건을 사용하고,
+- -> 해당 결합키로 잘라진 부분 집합을 조작하는 기술. 
+- --> 상관 서브쿼리 사용한 코드에서 직전, 직후 데이터 구할때 MAX/MIN 함수를 사용
+- --> 두번째, 세번째 구하는 것은 조금 어려움, 실행계획이 복잡함.
+- 윈도우 함수로 직전 회사명 검색 예시
+```sql
+SELECT company,
+       year,
+       sale,
+       MAX(company)
+            OVER(PARTITION BY company
+                    ORDER BY year
+                    ROWS BETWEEN 1 PRECEDING 
+                             AND 1 PRECEDING) AS pre_company
+FROM Sales;
+```
+- 상관 서브쿼리를 사용
+```sql
+SELECT company,
+       year,
+       sale,
+       (SELECT company
+          FROM Sales S2
+        WHERE S1.company = S2.company
+          AND year = (SELECT MAX(year)
+                        FROM Sales S3
+                        WHERE S1.company = S3.company
+                          AND S1.year > S3.year)) AS pre_company,
+        (SELECT sale
+           FROM Sales S2
+          WHERE S1.company = S2.company
+            AND year = (SELECT MAX(year)
+                          FROM Sales S3
+                         WHERE S1.company = S3.company
+                           AND S1.year > S3.year)) AS pre_sale
+FROM Sales S1;
+```
 
 ### 2. 최대 반복 횟수가 정해진 경우
+- ex) 인접한 우편번호 찾기.. 
+- 4130033 과 왼쪽부터 비슷한 숫자 찾기
+- -> 41300*, 4130** ... -> 반복
+- -> 결국, 순위 붙이기 문제.. 
+- rank필드를 만들기 위해 CASE 식 사용
+```sql
+SELECT pcode,
+       district_name,
+       CASE WHEN pcode = '4130033' THEN 0
+            WHEN pcode = '413003%' THEN 1
+            WHEN pcode = '41300%' THEN 2
+            WHEN pcode = '4130%' THEN 3
+            WHEN pcode = '413%' THEN 4
+            WHEN pcode = '41%' THEN 5
+            WHEN pcode = '4%' THEN 6
+            ELSE NULL END AS rank
+FROM PostalCode;
+```
+- CASE 식의 WHEN 구는 차례대로 조건을 검사하다가, 조건이 맞으면 이후의 WHEN 구를 평가하지 않음..
+- -> 순위가 가장 높은 우편번호를 선택.. -> rank필드값이 제일 작다 -> MIN함수
+
+#### cf) 인덱스 온리 스캔
+- select 구문에 사용하는 필드에 모두 인덱스가 포함되어 있을 때 테이블 스캔을하지 않고 인덱스를 사용한 접근만 실행가능함.
 
 ### 3. 반복 횟수가 정해지지 않은 경우
+- ex) 우편변호
+- 우편번호를 키로 삼아 데이터를 줄줄이 연결한 것을 포인터 체인이라고 함. 
+- 포인터체인을 사용하는 테이블 형식을 '인접리스트모델'이라고 부름
+- -> SQL에서 계층구조를 찾는 방법 중 하나는 재귀 공통 테이블 식을 사용하는 방법
+```sql
+WITH RECURSIVE Explosion(name, pcode, new_pcode, depth)
+AS
+(SELECT name, pcode, new_pcode, 1
+   FROM PostalHistory
+  WHERE name ='A'
+    AND new_pcode IS NULL -- 검색 시작
+ UNION
+ SELECT Child.name, Child.pcode, Child.new_pcode, depth + 1
+   FROM Explosion AS Parent, PostalHistory AS Child
+  WHERE Parent.pcode = Child.new_pcode
+    AND Parent.name = Child.name)
+-- 메인 SELECT 구문
+ SELECT name, pcode, new_pcde
+   FROM Explosion
+  WHERE depth = (SELECT MAX(depth)
+                   FROM Explosion);
+```
+- 재귀 공통 테이블 식 Explosion은 A씨에 대해서 현재 주소 (new_pcode 필드가 NULL)
+- -> 부터 출발해서 포인터 체인을 타고 올라가 가거의 주소를 모두 찾음
+- -> 이때 가장 오래된 주소는 재귀 수준이 가장 깊은 레코드. 이를 depth 필드로 찾음
+- -> depth 필드는 한 번 반복할 때마다 1씩 증가하므로 depth 필드가 가장큰 것이 가장 재귀 수준이 깊다는 거시. 
+#### 재귀 공통 테이블은 비교적 최근 기능이라 없는 경우 대체수단 필요
+- 중첩 집합 모델 
+- -> 각 레코드의 데이터를 집합으로 보고, 계층구조를 집합의 중첩관계로 나타낸다는 의미. 
 
 ## 17강 바이어스의 공죄
 
 # 6장 결합
+- 내부결합과 외부결합 중점적으로 
+- 결합에서 기본이 되는 알고리즘은 다중루프(Nested Loop)
 
 ## 18강 기능적 관점으로 구분하는 결합의 종류
+- sql 결합의 종류 
+- 크로스 결합 (기능적인 관점으로 분류)
+- 내부 결합 (기능적인 관점으로 분류)
+- 외부 결합 (기능적인 관점으로 분류)
+- 자기 결합
+- 등가 결합/비등가 결합
+- 자연결합
+- -> 크로스, 내부, 외부 결합은 생성되는 결과의 형태에 따라 이름 지어짐
+- -> 이 세가지는 배타적인 분류이므로, '내부결합이면서 외부결합이다'라는 조합은 없음 
+- 등가 결합/비등가 결합은 결합 조건을 등호를 사용하는지, 이외의 부등호를 사용하는지 차이를 의미.
+- -> 따라서 외부결합이면서 비등가 결합이다라는 조합은 가능함
+- 자연결합은 가장 가주 사용하는 '내부결합이면서 등가결합'이라는 조합을 간단하게 작성하는 것
+- 자기 결합른 사실 결합 카테고리로 구분할 필요는 없음
+
+### cf) 자연결합 구문
+```sql
+SELECT * 
+    FROM Employees NATURAL JOIN Departments;
+```
+- -> 자연결합은 암묵적으로 같은 이름의 필드가 등호로 결합됨
+- -> 아래는 같은 로직의 일반적인 내부 결합.
+```sql
+SELECT *
+    FROM Employees E INNER JOIN Departments D 
+      ON E.dept_id = D.dept_id;
+```
+- 자연 결합은 사용 추천하지 않음
+- 또한 자연 결합과 내부 결합의 중간적인 형태로 USING 구가 있음
+```sql
+SELECT * 
+    FROM Employees INNER JOIN Departments
+    USING (dept_id);
+```
+- -> 등가조건밖에 사용할 수 없고, 필드 이름이 다른 경우 사용할 수 없음. -> 내부결합 사용 추천
+
 
 ### 1. 크로스 결합 - 모든 겹합의 모체
+- 실무에 사용할 기회가 거의 없음.
+- -> 크로스 결합이 결합의 연산을 이래하는 지름길..
 
 ### 2. 내부 결합 - 왜 '내부'라는 말을 사용할까?
 
