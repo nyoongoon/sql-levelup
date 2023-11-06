@@ -1593,16 +1593,128 @@ SELECT dept_id, dept_name
 - (SQL SERVER는 tempdb 파일에, Oracle은 temp segment 파일)
 #### 3 - 최적화를 받을 수 없음
 - 서브쿼리로 만들어지는 데이터는 구조적으로는 테이블에 차이가 없음. 
+- 하지만 명시적인 제약 또는 인덱스가 작성되어 있는 테이블과 달리,
+- **서브쿼리에는 메타정보가 하나도 존재하지 않음!!**
+- -> 옵티마이가 쿼리를 해석하기 위한 필요한 정보를 서브쿼리에서는 얻을 수 없음
+- -> 내부적으로 복잡한 연산을 수행하거나 결과 크기가 큰 서브쿼리 사용할 때 성능 리스크를 고려해야함.
 
 ### 2. 서브쿼리 의존증
+- ex) 고객의 구입 명세 정보 테이블. 순번은 구입시기가 오래될 수록 작은값-> 고객별 최소 순번 레코드 구하기
+- -> 어려운 점은 순번의 최솟 값이 고객마다 다르다는 점
+#### 서브쿼리를 사용한 방법
+- 고객들의 최소 순번 값을 저장하는 서브쿼리 만들고 기존 Receipts 테이블과 결합하는 방법
+```sql
+SELECT R1.cust_id, R1.seq, R1.price
+    FROM Receipts R1
+        INNER JOIN 
+            (SELECT cust_id, MIN(sql) AS min_seq
+                FROM Receipts
+                GROUP BY cust_id) R2
+        On R1.cust_id = R2.cust_id
+        AND R1.seq = R2.min_seq;
+```
+- 위 쿼리를 그림으로 나타낸다면
+  ![](img/img_12.png)
+##### 위 방식의 두가지 단점 
+- -> 1. 코드가 복잡해져서 읽기 어려움
+- -> 2. 성능 이슈(4가지 문제)
+- --> 1 서브쿼리는 대부분 일시적인 영역(메모리 또는 디스크)에 확보되므로 오버헤드가 생김
+- --> 2 서브쿼리는 인덱스 또는 제약정보를 가지지 않기 때문에 최적화 되지 못함
+- --> 3 이 쿼리는 결합을 필요로 하기 때문에 비용이 높고, 실행 계획 변동 리스크가 발생함.
+- --> 4 Receipts 테이블에 스캔이 두 번 필요.
+
+##### 상관서브쿼리는 답이 될 수 없다 !
+- 상관서브쿼리 : 조건에 내부쿼리와 외부쿼리를 사용한 서브쿼리
+- -> 실행계획을 보면 결합을 사용하고 있음.
+```sql
+SELECT cust_id, seq, price
+    FROM Receipts R1
+    WHERE seq = (SELECT MIN(seq)
+                 FROM Receipts R2
+                 WHERE R1.cust_id = R2.cust_id);
+```
+
+##### 윈도우 함수로 결합을 제거
+- Receipts테이블에 대한 접근을 1회로 줄이기
+- 접근을 줄이기 위해 윈도우 함수 ROW_NUMBER를 다음과 같은 형태로 사용
+```sql
+SELECT cust_id, seq, price
+    FROM (SELECT cust_id, seq, price,
+            ROW_NUMBER()
+            OVER (PARTITION BY cust_id
+                    ORDER BY seq) AS row_seq
+            FROM Receipts) WORK
+WHERE WORK.row_seq = 1;
+```
 
 ### 3. 장기적 관점에서의 리스크 관리
+- 위는 테이블 접근 뿐만아니라, 결합도 제거
+- 결합을 사용한 쿼리는 다음과 같은 두 개의 불안정 요소
+- -> 결합 알고리즘의 변동 리스크
+- -> 환경 요인에 의한 지연 리스크(인덱스, 메모리, 매개변수 등)
+#### 알고리즘 변동 리스크
+- 처음엔 테이블 레코드수가 적어 NestedLoops 사용하다가,
+- -> 레코드가 늘어나서 **실행계획 변동이 생기는데, 악화되는 경우**도 있음.
+#### 환경 요인에 의한 지연 리스크
+- **결합은 인덱스, 메모리등을 계속 신경써줘야함**
+- -> 장기적 관점에서 고려해야할 리스크를 늘리는 것.
 
 ### 4. 서브쿼리 의존증 - 응용편
+- 순번의 최솟값과 최대값 구해서 차이 구하기
+- -> 최솟값의 집합을 찾고, 최댓값의 집합을 찾은 뒤 고객ID를 키로 결합..
+```sql
+SELECT TMP_MIN.custId,
+       TMP_MIN.price - TMP_MAX.price AS diff
+   FROM (SELECT R1.cust_id, R1.seq, R1.price
+         FROM Receipts R1
+                INNER JOIN
+                (SELECT cust_id, MIN(seq) AS min_seq
+                 FROM Receipts
+                 GROUP BY cust_id)R2
+            ON R1.cust_id = R2.cust_id
+         AND R1,seq       = R2.min_seq) TMP_MIN
+   INNER JOIN
+       (SELECT R3.cust_id, R3.seq, R3.price
+            FROM Receipts R3
+                    INNER JOIN
+                        (SELECT cust_id, MAX(seq) max_seq)
+                        FROM Receipts
+                        GROUP BY cust_id)R4
+                    ON R3.cust_id = R4.cust_id) R4
+                    AND R3.seq = R4.max_seq) TMP_MAX
+   ON TMP_MIN.cust_id = TMP_MAX.cust_id; 
+```
+- 레코드간 비교에서도 결합은 불필요
+- -> 테이블 접근과 결합 줄이기 -> 추가로 CASE 식 사용
+```sql
+SELECT cust_id,
+       SUM(CASE WHEN min_seq = 1 THEN price ELSE 0 END)
+       -SUM(CASE WHEN max_seq = 1 THEN price ELSE 0 END) AS diff
+   FROM(SELECT cust_id, price,
+               ROW_NUMBER() OVER (PARTITION BY cust_id
+                                        ORDER BY seq)  AS min_seq,
+               ROW NUMBER() OVER (PARTITION BY cust_id
+                                        ORDER BY seq DESC) AS max_seq
+                FROM Receipts) WORK
+   WHERE WORK.min_seq = 1
+        OR WORK.max._seq = 1
+        GROUP BY cust_id;
+```
+- -> 서브쿼리는 WORK 하나. 결합발생X
+- 한가지 트릭 -> SUM 함수 내부의 CASE 식
+- 현재 WORK 뷰 시점에서의 최솟값과 최댓값은 서로 다른 레코드에 존재함.
+- -> **GROUP BY cust_id로 한개의 레코드로 집약**.
+- -> 이때 최솟값과 최댓값을 다른 필드에 할당해주는 부분이 CASE식. 
+- --> Receipts 스캔 횟수가 1회로감소. 윈도우함수로 정렬이 2번 발생했지만
+- --> 결합보다 저렴하고 실행계획이 안정적임. 
 
 ### 5. 서브쿼리는 정말 나쁠까?
+- -> 집합을 세세히 나누는 서브쿼리는 바텀업 타입의 사고방식 - 비절자치향인 SQL과 맞지 않음. 
+- 사용해야만 하는 경우만 사용하기..
 
 ## 22강 서브쿼리 사용이 더 나은 경우
+- 결합과 관련된 쿼리에서. 결합 시 최대한 결합 대상 레코드를 줄이는 것이 중요
+- 옵티마이저가 잘 판변할지 못할 때는 사람이 직접 연산순서 명시해주면 성능적으로 좋은결과 
 
 ### 결합과 집약 순서
 
